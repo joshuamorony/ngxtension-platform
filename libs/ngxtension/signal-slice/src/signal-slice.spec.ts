@@ -1,6 +1,6 @@
 import { TestBed, fakeAsync, flush, tick } from '@angular/core/testing';
 import { Observable, Subject, of, timer } from 'rxjs';
-import { map, switchMap } from 'rxjs/operators';
+import { map, switchMap, tap } from 'rxjs/operators';
 import { SignalSlice, signalSlice } from './signal-slice';
 
 describe(signalSlice.name, () => {
@@ -105,6 +105,28 @@ describe(signalSlice.name, () => {
 			ageSource$.next(incrementAge);
 
 			expect(state().age).toEqual(initialState.age + incrementAge);
+		});
+
+		it('should allow supplying function that takes state signal and state observable', () => {
+			const ageSource$ = new Subject<number>();
+
+			TestBed.runInInjectionContext(() => {
+				state = signalSlice({
+					initialState,
+					sources: [
+						ageSource$.pipe(map((age) => ({ age }))),
+						(_, state$) =>
+							state$.pipe(
+								tap((val) => console.log(val)),
+								map(({ age }) => ({ powerLevel: 2 * age })),
+							),
+					],
+				});
+			});
+
+			ageSource$.next(5);
+			TestBed.flushEffects();
+			expect(state().powerLevel).toEqual(10);
 		});
 	});
 

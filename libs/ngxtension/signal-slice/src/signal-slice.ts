@@ -12,7 +12,14 @@ import {
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { connect, type PartialOrValue, type Reducer } from 'ngxtension/connect';
 import { createNotifier } from 'ngxtension/create-notifier';
-import { Subject, isObservable, share, take, type Observable } from 'rxjs';
+import {
+	Subject,
+	distinctUntilChanged,
+	isObservable,
+	share,
+	take,
+	type Observable,
+} from 'rxjs';
 
 type ActionSourceFn<TSignalValue, TPayload> = (
 	state: Signal<TSignalValue>,
@@ -81,9 +88,9 @@ type ActionStreams<
 	TActionSources extends NamedActionSources<TSignalValue>,
 > = {
 	[K in keyof TActionSources &
-		string as `${K}$`]: TActionSources[K] extends ActionSourceFn<TSignalValue, unknown>
+		string as `${K}$`]: TActionSources[K] extends Reducer<TSignalValue, unknown>
 		? Observable<void>
-		: TActionSources[K] extends ActionSourceFn<TSignalValue, infer TValue>
+		: TActionSources[K] extends Reducer<TSignalValue, infer TValue>
 			? TValue extends Observable<any>
 				? TValue
 				: Observable<TValue>
@@ -98,8 +105,19 @@ type ActionUpdates<
 };
 
 export type Source<TSignalValue> = Observable<PartialOrValue<TSignalValue>>;
+
+type SingleArgSource<TSignalValue> = (
+	state: Signal<TSignalValue>,
+) => Source<TSignalValue>;
+type DoubleArgSource<TSignalValue> = (
+	state: Signal<TSignalValue>,
+	state$: Observable<TSignalValue>,
+) => Source<TSignalValue>;
+
 type SourceConfig<TSignalValue> = Array<
-	Source<TSignalValue> | ((state: Signal<TSignalValue>) => Source<TSignalValue>)
+	| Source<TSignalValue>
+	| SingleArgSource<TSignalValue>
+	| DoubleArgSource<TSignalValue>
 >;
 
 export type SignalSlice<
@@ -174,7 +192,7 @@ export function signalSlice<
 		TEffects
 	>;
 
-	connectSources(state, sources);
+	connectSources(state, state$, sources);
 
 	for (const [key, actionSource] of Object.entries(
 		actionSources as TActionSources,
@@ -238,7 +256,7 @@ export function signalSlice<
 	const connectLazySources = () => {
 		if (!lazySourcesLoaded) {
 			lazySourcesLoaded = true;
-			connectSources(state, lazySources, injector, true);
+			connectSources(state, state$, lazySources, injector, true);
 		}
 	};
 
@@ -256,6 +274,7 @@ export function signalSlice<
 
 function connectSources<TSignalValue>(
 	state: WritableSignal<TSignalValue>,
+	state$: Observable<TSignalValue>,
 	sources: SourceConfig<TSignalValue>,
 	injector?: Injector,
 	useUntracked = false,
@@ -264,7 +283,24 @@ function connectSources<TSignalValue>(
 		if (isObservable(source)) {
 			connect(state, source, injector, useUntracked);
 		} else {
-			connect(state, source(state.asReadonly()), injector, useUntracked);
+			if (isSingleArgSource(source)) {
+				connect(state, source(state.asReadonly()), injector, useUntracked);
+			} else if (isDoubleArgSource(source)) {
+				connect(
+					state,
+					// TODO: state$ emits infinitely
+					source(
+						state.asReadonly(),
+						state$.pipe(
+							distinctUntilChanged(
+								(prev, curr) => JSON.stringify(prev) !== JSON.stringify(curr),
+							),
+						),
+					),
+					injector,
+					useUntracked,
+				);
+			}
 		}
 	}
 }
@@ -325,4 +361,16 @@ function addReducerProperties(
 		},
 	});
 	subs.push(subject);
+}
+
+function isSingleArgSource<TSignalValue>(
+	source: SingleArgSource<TSignalValue> | DoubleArgSource<TSignalValue>,
+): source is SingleArgSource<TSignalValue> {
+	return source.length === 1;
+}
+
+function isDoubleArgSource<TSignalValue>(
+	source: SingleArgSource<TSignalValue> | DoubleArgSource<TSignalValue>,
+): source is DoubleArgSource<TSignalValue> {
+	return source.length === 2;
 }
